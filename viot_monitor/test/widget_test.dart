@@ -7,9 +7,7 @@ import 'package:viot_monitor/core/providers/app_providers.dart';
 import 'package:viot_monitor/core/repositories/mock_viot_repository.dart';
 
 void main() {
-  testWidgets('app shell renders VIOT Monitor tabs', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('app shell renders VibScan tabs', (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
 
@@ -24,7 +22,7 @@ void main() {
     );
     await tester.pump(const Duration(seconds: 1));
 
-    expect(find.text('VIOT Monitor'), findsOneWidget);
+    expect(find.text('VibScan'), findsOneWidget);
     expect(find.text('WiFi'), findsOneWidget);
     expect(find.text('Analyze'), findsOneWidget);
     expect(find.text('Dashboard'), findsOneWidget);

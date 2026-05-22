@@ -1,11 +1,11 @@
 {
-    "name": "viot_monitor",
-    "short_name": "viot_monitor",
+    "name": "VibScan",
+    "short_name": "VibScan",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "VibScan mobile vibration monitoring app.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

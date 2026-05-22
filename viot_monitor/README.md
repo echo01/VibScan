@@ -1,227 +1,315 @@
-# VIOT ESP32 Firmware
+# VibScan Mobile App
 
-Firmware สำหรับ ESP32 vibration monitoring node ที่ใช้ `ADXL345`, WiFi, HTTP/WebSocket API และ MQTT/MQTTS. เอกสารนี้สรุปตาม code ปัจจุบันของโปรเจกต์ `IotModule2_v2.00`.
+Flutter mobile app for discovering, monitoring, analyzing, and configuring ESP32 VIOT vibration sensor nodes.
 
-## ภาพรวมระบบ
+This README summarizes the current mobile app behavior. Firmware/API details are documented in [API_mobile.md](API_mobile.md), and vibration fault rules are documented in [Fault_Identification.md](Fault_Identification.md).
 
-- อ่านข้อมูลสั่นสะเทือนจาก `ADXL345` จำนวน `1024` samples ต่อรอบ
-- คำนวณ RMS acceleration, RMS velocity, dominant frequency, displacement และ FFT snapshot
-- เปิด HTTP API สำหรับ dashboard, status, config, WiFi scan, MEMS calibration, FFT job, MQTT retry, reboot และ reset
-- ส่งข้อมูล realtime ผ่าน `WebSocket /ws`
-- Publish telemetry ไป MQTT/MQTTS และรับ MQTT command สำหรับขอ FFT รายแกน
-- บันทึก config ใน SPIFFS ที่ `/config.json`
-- รองรับ discovery ผ่าน mDNS, UDP port `37020` และ `GET /api/discover`
+## Overview
 
-ไฟล์หลักที่ควรดูเมื่อแก้ logic:
+VibScan connects to ESP32 vibration sensor nodes over local network REST APIs. The app focuses on:
 
-- `src/main.cpp`
-- `src/web_server.cpp`
-- `src/mqtt_handler.cpp`
-- `src/wifi_handler.cpp`
-- `src/discovery_service.cpp`
-- `src/power_management.cpp`
-- `src/storage.cpp`
-- `src/sensors.cpp`
-- `include/config.h`
-- `include/common.h`
+- Device discovery by mDNS, UDP discovery, and known IP
+- Live dashboard polling with MQTT-safe REST calls
+- Machine health assessment using ISO 10816-1 velocity RMS thresholds
+- VibScan FFT-based fault identification
+- MQTT runtime and publish monitoring
+- Device configuration by REST form POST endpoints
+- CSV export and sharing for dashboard and FFT data
 
-## Hardware Mapping
+## Tech Stack
 
-อ้างอิงจาก `include/config.h` และ code ปัจจุบัน:
+- Flutter
+- Riverpod for state management
+- Dio for REST API calls
+- SharedPreferences for local saved devices and preferences
+- fl_chart and custom painting for charts
+- Android platform channel for mobile WiFi scan and CSV Downloads save
 
-| Pin | หน้าที่ |
+## App Navigation
+
+The app uses a five-item bottom navigation shell:
+
+| Menu | Purpose |
 | --- | --- |
-| `GPIO27` | Mode switch, `HIGH = Debug/Always ON`, `LOW = Normal/Sleep` |
-| `GPIO32` | Status LED, เปิดตอน wake |
-| `GPIO33` | MQTT activity LED, blink ตอน publish สำเร็จ |
-| `GPIO34` | Battery ADC ผ่าน divider `100k/100k` |
-| `GPIO25` | ADXL345 `INT1`, ใช้ wake จาก motion |
-| `GPIO26` | ADXL345 `INT2` |
-| `GPIO23` | Debug sample pulse |
-| `GPIO21` | I2C SDA |
-| `GPIO22` | I2C SCL |
+| WiFi | Scan mobile WiFi networks, discover VIOT devices, save/select devices |
+| Analyze | Machine Health and VibScan analysis |
+| Dashboard | Live dashboard, realtime chart, FFT panel, CSV export |
+| MQTT | MQTT status and publish summary |
+| Config | MQTT, Network, MEMS, Operate, and System actions |
 
-หมายเหตุสำคัญของ `GPIO27`: วงจรมี external pull-down อยู่แล้ว จึงตั้ง runtime เป็น `INPUT` และตั้ง RTC deep sleep เป็น `pulldown_en` / `pullup_dis`. ถ้า GPIO27 เป็น HIGH เครื่องจะเข้า debug mode และไม่ deep sleep.
+## Core Flow
 
-## Runtime Modes
+1. Open WiFi menu.
+2. Discover VIOT nodes or connect to the device AP.
+3. Save a discovered node.
+4. Select the active node.
+5. Use Dashboard, Analyze, MQTT, or Config menus against the active node.
 
-### Normal Mode
+Saved device and active node are persisted locally with SharedPreferences.
 
-เงื่อนไข: `GPIO27 = LOW`
+## REST API Usage
 
-- ตั้ง unused pins บางตัวเป็น low-power state
-- อ่าน battery แบบ average หลังรอให้ระบบนิ่งประมาณ `5s`
-- ไม่สร้าง ADC task อ่านแบตซ้ำทุก 30 วินาที
-- เมื่อ publish MQTT สำเร็จอย่างน้อย 1 payload จะเข้า deep sleep
-- Wake ได้จาก timer และ ADXL345 motion interrupt
+The app uses REST polling and form POST APIs. Config POST requests are sent as `application/x-www-form-urlencoded`.
 
-### Debug Mode
+Key endpoints:
 
-เงื่อนไข: `GPIO27 = HIGH`
+| Method | Endpoint | Used For |
+| --- | --- | --- |
+| GET | `/api/discover` | Confirm device identity |
+| GET | `/api/dashboard?keep_mqtt=1` | Live dashboard polling |
+| GET | `/api/status` | MQTT/runtime status |
+| GET | `/api/config` | Load current configuration |
+| POST | `/api/network_config` | Save STA/AP/static IP settings |
+| POST | `/api/mqtt_config` | Save MQTT/MQTTS settings |
+| POST | `/api/mems_config` | Save MEMS and vibration thresholds |
+| POST | `/api/operate_config` | Save publish/sleep/debug settings |
+| POST | `/api/system_config` | System config endpoint, currently not exposed in System tab |
+| POST | `/api/scan_ssid_start` | Start background WiFi scan on node |
+| GET | `/api/scan_ssid_status` | Poll node WiFi scan result |
+| GET | `/api/mqtt_publish_summary?keep_mqtt=1` | MQTT publish summary |
+| GET | `/api/fft_spectrum` | Start HTTP FFT job in debug mode |
+| GET | `/api/fft_status` | Poll HTTP FFT job |
+| POST | `/api/reboot` | Reboot ESP32; used by Restart MQTT button |
+| POST | `/api/reset` | Factory default reset |
 
-- ปิด sleep (`g_power_manager.disableSleep()`)
-- ADC task อ่าน battery ทุก `30s`
-- Web/API/MQTT/MEMS tasks ทำงานต่อเนื่อง
-- เหมาะสำหรับ config, debug, HTTP FFT, calibration และดู dashboard realtime
+## Dashboard
 
-## Power / Sleep Behavior
+Dashboard uses:
 
-- ค่า default `sleep_interval_sec` คือ `3600` วินาที
-- Normal mode จะ publish ครั้งแรกทันทีเมื่อ MQTT connected และมี MEMS analysis พร้อม ไม่ต้องรอครบ `publish_interval_s`
-- ถ้า WiFi หรือ MQTT fail ครบ retry limit ใน normal mode เครื่องจะกลับเข้า deep sleep โดยไม่ publish
-- Motion wake policy จะ suppress ADXL345 wake ชั่วคราวเมื่อเกิด motion wake ติดต่อกันหลายครั้ง เพื่อลด wake loop
-- Battery timing ต่างกันตาม mode:
-  - normal: sample ครั้งเดียวต่อ wake cycle
-  - debug: refresh ทุก 30 วินาที
+```text
+GET /api/dashboard?keep_mqtt=1
+```
 
-## Network และ Discovery
+The `keep_mqtt=1` query is used so dashboard polling does not pause or disconnect MQTTS on firmware builds that support this behavior.
 
-- HTTP port: `80`
-- SoftAP fallback IP: `192.168.4.1`
+Displayed data includes:
+
+- Acceleration X/Y/Z
+- Velocity X/Y/Z in `mm/s`
+- Frequency X/Y/Z in `Hz`
+- Displacement X/Y/Z in `um`
+- Pitch and roll
+- Battery
+- RSSI
+- MEMS timing diagnostics
+- Realtime trend chart
+- CSV export/share
+
+## Analyze
+
+The Analyze menu has a shared compact Device card above its tabs. The Device card can be collapsed to save vertical space.
+
+Analyze contains two tabs:
+
+### Machine Health
+
+Machine Health evaluates vibration velocity RMS by axis against ISO 10816-1 style machine classes.
+
+Supported machine classes:
+
+| Class | Good | Satisfactory | Unsatisfactory | Unacceptable |
+| --- | ---: | ---: | ---: | ---: |
+| Class I | `<= 0.71` | `<= 1.80` | `<= 4.50` | `> 4.50` |
+| Class II | `<= 1.12` | `<= 2.80` | `<= 7.10` | `> 7.10` |
+| Class III | `<= 1.80` | `<= 4.50` | `<= 11.20` | `> 11.20` |
+| Class IV | `<= 2.80` | `<= 7.10` | `<= 18.00` | `> 18.00` |
+
+Machine Health shows:
+
+- Machine class selector
+- Overall health result
+- Axis X/Y/Z compact cards
+- `mm/s RMS` value on one line
+- ISO class threshold bar with A/B/C/D zones
+- Decision marker based on the highest measured axis
+
+### VibScan
+
+VibScan performs FFT-based fault identification using the rule engine from [Fault_Identification.md](Fault_Identification.md).
+
+User inputs:
+
+- RPM
+- FFT axis X/Y/Z
+
+RPM is converted to order frequencies:
+
+```text
+1X = RPM / 60
+2X = 2 * 1X
+3X = 3 * 1X
+```
+
+VibScan loads FFT data from the selected node, then calculates:
+
+- FFT resolution
+- 0.5X, 1X, 2X, and 3X amplitudes
+- Harmonic count from 1X to 10X
+- Main peak frequency
+- Fault confidence scores
+
+Implemented fault rules:
+
+- Unbalance
+- Misalignment
+- Mechanical Looseness
+- Bearing Defect, shown as suspected/basic MVP without bearing geometry
+
+VibScan displays:
+
+- Main fault type
+- Status: Normal or Unknown, Suspected, Warning, Critical
+- Confidence score
+- Spectrum FFT chart with 1X, 2X, and 3X markers
+- Order amplitude table
+- Per-fault score bars
+- Reason list
+- Maintenance recommendations
+
+## MQTT Menu
+
+MQTT menu monitors:
+
+- MQTT connected/disconnected state
+- MQTT status string
+- TLS enabled/disabled
+- Retry limited state
+- Connect failure count
+- Publish summary
+- Last sent/next send
+- Subscribe RX information
+- Payload byte counts
+
+The `Restart MQTT` button intentionally calls:
+
+```text
+POST /api/reboot
+```
+
+This reboots the ESP32 rather than calling `/api/mqtt_restart`.
+
+## Config Device
+
+Config Device has five tabs:
+
+- MQTT
+- Network
+- MEMS
+- Operate
+- System
+
+### MQTT
+
+Loads from `/api/config` and saves to `/api/mqtt_config`.
+
+Supports:
+
+- Broker
+- Port
+- Client ID
+- Username/password
+- MQTT/MQTTS protocol
+- TLS toggle
+- Publish, FFT, subscribe, ACK, and result topics
+
+### Network
+
+Loads from `/api/config` and saves to `/api/network_config`.
+
+Supports:
+
+- STA SSID/password
+- Device-side SSID scan
+- AP fallback enable
+- AP SSID/password
+- Static STA IP, gateway, subnet, DNS
+
+### MEMS
+
+Loads from `/api/config` and saves to `/api/mems_config`.
+
+Supports:
+
+- ADXL345 rate/range/offsets
+- Interrupt threshold and enable
+- Vibration RMS/peak thresholds
+- Noise floor
+- Deadband
+- Frequency range
+- Sleep interval
+- MEMS no-vibration calibration
+- MEMS calibration reset
+
+### Operate
+
+Loads from `/api/config` and saves to `/api/operate_config`.
+
+Supports:
+
+- Publish interval
+- Wake interrupt threshold
+- Wake timer
+- Publish on vibration trigger
+- Vibration trigger threshold
+- Log enable
+- Debug log category toggles
+
+### System
+
+The System tab is intentionally simplified. It only exposes Factory Default reset.
+
+Factory Default calls:
+
+```text
+POST /api/reset
+```
+
+The app shows a confirmation dialog before sending the command. Saved devices in the mobile app are not removed.
+
+## WiFi and Discovery
+
+The WiFi menu supports two WiFi-related flows:
+
+- Mobile-side WiFi scan through Android platform APIs
+- Device discovery through mDNS and UDP
+
+Discovery methods:
+
 - mDNS service: `_iot-sensor._tcp.local`
 - UDP discovery port: `37020`
-- Discovery endpoint: `GET /api/discover`
-- Protocol ID: `viot-discovery-v1`
+- HTTP confirmation: `GET /api/discover`
 
-SoftAP ไม่ได้ถูกคงไว้เสมอหลัง STA connected. Mobile app ควรค้นหา device ด้วย mDNS/UDP/known IP ก่อน แล้ว confirm ด้วย `/api/discover`.
+The default AP setup base URL is:
 
-## HTTP / WebSocket Surface
-
-หน้าเว็บหลัก:
-
-- `/`
-- `/index.html`
-- `/mqtt_setting.html`
-- `/network_setting.html`
-- `/mems_setting.html`
-- `/operate_config.html`
-- `/system_setting.html`
-- `/mqtt_log`
-- `/fft_chart.html` เฉพาะเมื่อ build ด้วย `ENABLE_WEB_FFT=1`
-
-API หลัก:
-
-| Method | Path | ใช้สำหรับ |
-| --- | --- | --- |
-| `GET` | `/api/discover` | device identity, IP, discovery metadata |
-| `GET` | `/api/status` | system/WiFi/MQTT/battery status |
-| `GET` | `/api/health` | heap, reset reason, restart recommendation |
-| `GET` | `/api/dashboard?keep_mqtt=1` | vibration dashboard ล่าสุด |
-| `GET` | `/api/config` | อ่าน config ทั้งหมด |
-| `POST` | `/api/config` | legacy WiFi save: `ssid`, `password` |
-| `POST` | `/api/network_config` | STA/AP/static IP |
-| `POST` | `/api/mqtt_config` | MQTT/MQTTS/topics/publish interval |
-| `POST` | `/api/mems_config` | ADXL345 และ vibration thresholds |
-| `POST` | `/api/operate_config` | publish/sleep/interrupt/debug logs |
-| `POST` | `/api/system_config` | system log enable |
-| `POST` | `/api/ap_config` | AP SSID/password |
-| `POST` | `/api/scan_ssid_start` | start background WiFi scan |
-| `GET` | `/api/scan_ssid_status` | poll WiFi scan result |
-| `GET` | `/api/scan_ssid` | compatibility scan status/cache |
-| `POST` | `/api/mems_calibrate` | start no-vibration calibration |
-| `GET` | `/api/mems_calibration_status` | poll calibration job |
-| `GET` | `/api/mems_calibration` | read saved calibration |
-| `POST` | `/api/mems_calibration_reset` | reset calibration |
-| `GET` | `/api/fft_spectrum` | default build: start HTTP FFT job in debug mode |
-| `POST` | `/api/fft_request` | start HTTP FFT job in debug mode |
-| `GET` | `/api/fft_status` | poll HTTP FFT job |
-| `GET` | `/api/fft_csv` | only when `ENABLE_WEB_FFT=1` |
-| `GET` | `/api/mqtt_publish_summary?keep_mqtt=1` | MQTT publish/command summary |
-| `POST` | `/api/mqtt_restart` | reset MQTT retry and reconnect |
-| `POST` | `/api/mqtt_retry` | alias ของ `/api/mqtt_restart` |
-| `POST` | `/api/reboot` | reboot device |
-| `POST` | `/api/reset` | factory reset |
-| `WS` | `/ws` | realtime dashboard push |
-
-POST handlers อ่านค่าจาก form parameters (`request->hasParam(name, true)`) เป็นหลัก จึงควรส่งเป็น `application/x-www-form-urlencoded` หรือ `multipart/form-data`. ไม่ควรส่ง JSON body ยกเว้น firmware ถูกแก้ให้ parse เพิ่ม.
-
-## MQTT Surface
-
-Default topics:
-
-| Purpose | Default |
-| --- | --- |
-| Main telemetry | `viot/vibration` |
-| FFT X mirror | `viot/vibration/fft/x` |
-| FFT Y mirror | `viot/vibration/fft/y` |
-| FFT Z mirror | `viot/vibration/fft/z` |
-| Command subscribe | `viot/config` |
-| Command ACK | `viot/config/ack` |
-| Command result | `viot/config/result` |
-
-Main telemetry payload:
-
-```json
-{
-  "timestamp": 123456789,
-  "data": {
-    "accel_x_rms": 0.01,
-    "accel_y_rms": 0.02,
-    "accel_z_rms": 1.0,
-    "vibration_x_rms_mm_s": 0.5,
-    "vibration_y_rms_mm_s": 0.8,
-    "vibration_z_rms_mm_s": 1.2,
-    "vibration_freq_x_hz": 48.0,
-    "vibration_freq_y_hz": 49.0,
-    "vibration_freq_z_hz": 50.0,
-    "displacement_x_um": 10.0,
-    "displacement_y_um": 11.0,
-    "displacement_z_um": 12.0,
-    "pitch_deg": 0.0,
-    "roll_deg": 0.0,
-    "yaw_deg": 0.0,
-    "battery_v": 3.91,
-    "wifi_rssi": -55,
-    "uptime_ms": 120000
-  }
-}
+```text
+http://192.168.4.1
 ```
 
-MQTT FFT command รองรับ plain text `fft_x`, `fft_y`, `fft_z` หรือ JSON:
+## CSV Export
 
-```json
-{
-  "action": "fft_x",
-  "request_id": "mobile-001",
-  "step_hz": 10
-}
-```
+The app can save and share:
 
-`step_hz` จะ normalize เป็นหนึ่งใน `10,15,20,25,30,35,40,45,50`.
+- Dashboard current metrics
+- Dashboard live history
+- FFT spectrum data
 
-## Mobile App Handoff
+On Android, CSV files are saved to Downloads through a native platform channel.
 
-คู่มือ API สำหรับ Mobile อยู่ที่ [API_mobile.md](API_mobile.md). แนวทางที่แนะนำ:
+## Tests
 
-1. ค้นหา device ด้วย mDNS หรือ UDP discovery
-2. Confirm device ด้วย `GET /api/discover`
-3. Poll `GET /api/status` หรือ `GET /api/health` สำหรับ health
-4. ใช้ `GET /api/dashboard?keep_mqtt=1` หรือ `WS /ws` สำหรับ dashboard
-5. อ่าน config ด้วย `GET /api/config`
-6. Save config ด้วย form POST endpoints
-7. ใช้ MQTT command/result สำหรับ FFT เมื่ออยู่นอก LAN หรือไม่ต้องการ HTTP debug FFT
-
-## Build / Flash
-
-PlatformIO environment:
-
-- env: `esp32-s3-devkitc-1`
-- board: `esp32dev`
-- framework: Arduino
-- filesystem: SPIFFS
-- serial baud: `115200`
-
-Commands:
+Run tests:
 
 ```bash
-pio run
-pio run --target upload
-pio run --target uploadfs
-pio device monitor --baud 115200
+flutter test
 ```
 
-ถ้า `pio` ไม่อยู่ใน PATH บนเครื่องนี้ มักใช้ path:
+Current test coverage includes:
 
-```powershell
-& "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run
-```
+- MQTT publish summary parsing
+- App shell/tab rendering
+
+## Related Documents
+
+- [API_mobile.md](API_mobile.md): ESP32 HTTP/MQTT API guide for mobile integration
+- [Fault_Identification.md](Fault_Identification.md): FFT fault identification rule engine
+- [README_IOTnode.md](README_IOTnode.md): ESP32 firmware/node README
